@@ -27,59 +27,109 @@ logging.basicConfig(level=logging.INFO,
                     ])
 logger = logging.getLogger()
 
+#
+# def train_one_epoch_1d(model: torch.nn.Module,
+#                        data_loader: Iterable, optimizer: torch.optim.Optimizer,
+#                        device: torch.device, epoch: int, loss_scaler,
+#                        log_writer=None,
+#                        args=None,
+#                        model_without_ddp=None):
+#     model.train()  # 确保模型是训练模式
+#     data_iter_step = 0
+#     total_loss = 0.0  # 用于累计损失
+#     total_samples = 0  # 用于累计训练样本数
+#     logger.info(f"Starting epoch {epoch} training...")
+#     for ir_spectra in data_loader:
+#         # 将数据移动到设备上
+#         ir_spectra = ir_spectra.to(device, non_blocking=True)
+#
+#         # 前向传播和计算损失
+#         with torch.cuda.amp.autocast():  # 自动混合精度
+#             loss, _, _ = model(ir_spectra, mask_ratio=args.mask_ratio)
+#
+#         # 检查损失值是否为NaN或无穷大
+#         if not torch.isfinite(loss):
+#             print(f"Invalid loss value: {loss}. Stopping training.")
+#             break  # 停止训练
+#
+#         # 反向传播和梯度更新
+#         loss = loss / args.accum_iter  # 如果使用梯度累积，平均损失
+#         loss_scaler(loss, optimizer, parameters=model.parameters(), update_grad=True)
+#
+#         # 梯度累积后，清除梯度
+#         if (data_iter_step + 1) % args.accum_iter == 0:
+#             optimizer.zero_grad()
+#         data_iter_step += 1
+#         total_loss += loss.item()
+#         total_samples += ir_spectra.size(0)
+#
+#         # 记录和日志
+#         if log_writer is not None and (data_iter_step + 1) % args.accum_iter == 0:
+#             avg_loss = total_loss / total_samples  # 平均损失
+#             log_writer.add_scalar('train_loss', avg_loss, epoch * len(data_loader) + data_iter_step)
+#             logger.info(f"Epoch {epoch}, Step {data_iter_step}, Avg Loss: {avg_loss:.4f}")
+#             total_loss = 0.0  # 重置损失累加器
+#             total_samples = 0  # 重置样本数累加器
+#
+#         # 保存模型
+#         if data_iter_step % (2e4) == 0:
+#             misc.save_model(
+#                 args=args, model= model_without_ddp, model_without_ddp=model, optimizer=optimizer,
+#                 loss_scaler=loss_scaler, epoch=epoch)
+#
+#         torch.cuda.synchronize()  # 确保所有GPU操作同步
+#
+#     print(f"Epoch {epoch} training completed.")
+def train_one_epoch_1d(model, data_loader, optimizer, device, epoch, loss_scaler,
+                       log_writer=None, args=None, model_without_ddp=None):
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
 
-def train_one_epoch_1d(model: torch.nn.Module,
-                       data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                       device: torch.device, epoch: int, loss_scaler,
-                       log_writer=None,
-                       args=None,
-                       model_without_ddp=None):
-    model.train()  # 确保模型是训练模式
-    data_iter_step = 0
-    total_loss = 0.0  # 用于累计损失
-    total_samples = 0  # 用于累计训练样本数
+    total_loss = 0.0
+    total_samples = 0
     logger.info(f"Starting epoch {epoch} training...")
-    for ir_spectra in data_loader:
-        # 将数据移动到设备上
+
+    for data_iter_step, ir_spectra in enumerate(data_loader):
         ir_spectra = ir_spectra.to(device, non_blocking=True)
 
-        # 前向传播和计算损失
-        with torch.cuda.amp.autocast():  # 自动混合精度
+        if not torch.isfinite(ir_spectra).all():
+            raise RuntimeError(f"Non-finite input detected at step {data_iter_step}")
+
+        if data_iter_step % args.accum_iter == 0:
+            lr_sched.adjust_learning_rate(
+                optimizer,
+                data_iter_step / len(data_loader) + epoch,
+                args
+            )
+
+        with torch.cuda.amp.autocast(enabled=True):
             loss, _, _ = model(ir_spectra, mask_ratio=args.mask_ratio)
 
-        # 检查损失值是否为NaN或无穷大
         if not torch.isfinite(loss):
-            print(f"Invalid loss value: {loss}. Stopping training.")
-            break  # 停止训练
+            raise RuntimeError(f"Invalid loss at epoch {epoch}, step {data_iter_step}: {loss.item()}")
 
-        # 反向传播和梯度更新
-        loss = loss / args.accum_iter  # 如果使用梯度累积，平均损失
-        loss_scaler(loss, optimizer, parameters=model.parameters(), update_grad=True)
+        loss_value = loss.item()
+        loss = loss / args.accum_iter
 
-        # 梯度累积后，清除梯度
+        loss_scaler(
+            loss,
+            optimizer,
+            clip_grad=1.0,
+            parameters=model.parameters(),
+            update_grad=((data_iter_step + 1) % args.accum_iter == 0)
+        )
+
         if (data_iter_step + 1) % args.accum_iter == 0:
-            optimizer.zero_grad()
-        data_iter_step += 1
-        total_loss += loss.item()
+            optimizer.zero_grad(set_to_none=True)
+
+        total_loss += loss_value * ir_spectra.size(0)
         total_samples += ir_spectra.size(0)
 
-        # 记录和日志
-        if log_writer is not None and (data_iter_step + 1) % args.accum_iter == 0:
-            avg_loss = total_loss / total_samples  # 平均损失
-            log_writer.add_scalar('train_loss', avg_loss, epoch * len(data_loader) + data_iter_step)
-            logger.info(f"Epoch {epoch}, Step {data_iter_step}, Avg Loss: {avg_loss:.4f}")
-            total_loss = 0.0  # 重置损失累加器
-            total_samples = 0  # 重置样本数累加器
+    optimizer.zero_grad(set_to_none=True)
+    avg_loss = total_loss / max(total_samples, 1)
+    logger.info(f"Epoch {epoch} done, avg loss={avg_loss:.6f}")
+    return {"loss": avg_loss}
 
-        # 保存模型
-        if data_iter_step % (2e4) == 0:
-            misc.save_model(
-                args=args, model= model_without_ddp, model_without_ddp=model, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch)
-
-        torch.cuda.synchronize()  # 确保所有GPU操作同步
-
-    print(f"Epoch {epoch} training completed.")
 
 
 def train_one_epoch(model: torch.nn.Module,

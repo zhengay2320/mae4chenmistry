@@ -12,7 +12,7 @@ from models.utils.pos_embed import get_1d_sincos_pos_embed_from_grid
 class MaskedAutoencoderViT1D(nn.Module):
     def __init__(self, patch_size=18, embed_dim=1024, depth=24, num_heads=16, mlp_ratio=4., norm_layer=nn.LayerNorm,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-                 seq_length=1800, norm_pix_loss=True):
+                 seq_length=1800, norm_pix_loss=False):
         super(MaskedAutoencoderViT1D, self).__init__()
 
         self.patch_size = patch_size
