@@ -121,7 +121,7 @@ def get_args_parser():
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--resume', default=None,
+    parser.add_argument('--resume', default=f'/home/rspip/zay/mae/mae-main/output_dir/checkpoint-154.pth',
                         help='resume from checkpoint')
 
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
@@ -211,7 +211,7 @@ def main(args):
 
     # define the model
     # model = models_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss)
-    model = models_mae.mae_vit_base_patch16_dec512d8b()
+    model = models_mae.mae_vit_base_patch9_dec512d8b()
 
     model.to(device)
 

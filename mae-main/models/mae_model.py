@@ -198,51 +198,53 @@ class MaskedAutoencoderViT1D(nn.Module):
         return x_masked, mask, ids_restore
 
     def forward_loss(self, x, pred, mask):
-        """
-        x: [N, seq_length] (输入的一维序列)
-        pred: [N, num_patches, patch_size] (模型预测的重建 patch)
-        mask: [N, num_patches] (掩码，0 表示保留，1 表示去除，计算损失时需要关注被去除的部分)
-        """
         target = self.patchify(x)
+
         if self.norm_pix_loss:
             mean = target.mean(dim=-1, keepdim=True)
             var = target.var(dim=-1, keepdim=True)
-            target = (target - mean) / (var + 1.e-6) ** .5
+            target = (target - mean) / (var + 1.e-6).sqrt()
 
-        loss = (pred - target) ** 2
-        loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+        # base reconstruction loss
+        recon_map = (pred - target) ** 2
+        recon_map = recon_map.mean(dim=-1)
+        recon_loss = (recon_map * mask).sum() / (mask.sum() + 1e-8)
 
-        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
-        return loss
+        # first derivative loss
+        pred_diff_1 = pred[..., 1:] - pred[..., :-1]
+        target_diff_1 = target[..., 1:] - target[..., :-1]
+        grad1_map = (pred_diff_1 - target_diff_1) ** 2
+        grad1_map = grad1_map.mean(dim=-1)
+        grad1_loss = (grad1_map * mask).sum() / (mask.sum() + 1e-8)
 
-        # 动态权重（例如，基于掩码区域的难度）
-        # dynamic_weights = mask * 2  # 根据掩码区域调整权重，举例：掩码区域权重为 2，非掩码区域为 1
-        # weighted_loss = loss * dynamic_weights
+        # second derivative loss
+        pred_diff_2 = pred_diff_1[..., 1:] - pred_diff_1[..., :-1]
+        target_diff_2 = target_diff_1[..., 1:] - target_diff_1[..., :-1]
+        grad2_map = (pred_diff_2 - target_diff_2) ** 2
+        grad2_map = grad2_map.mean(dim=-1)
+        grad2_loss = (grad2_map * mask).sum() / (mask.sum() + 1e-8)
+
+        total_loss = recon_loss + 0.2 * grad1_loss + 0.05 * grad2_loss
+        return total_loss
+
+    # def forward_loss(self, x, pred, mask):
+    #     """
+    #     x: [N, seq_length] (输入的一维序列)
+    #     pred: [N, num_patches, patch_size] (模型预测的重建 patch)
+    #     mask: [N, num_patches] (掩码，0 表示保留，1 表示去除，计算损失时需要关注被去除的部分)
+    #     """
+    #     # target = self.patchify(x)
+        # if self.norm_pix_loss:
+        #     mean = target.mean(dim=-1, keepdim=True)
+        #     var = target.var(dim=-1, keepdim=True)
+        #     target = (target - mean) / (var + 1.e-6) ** .5
         #
-        # # 计算损失时只关注去除的部分
-        # weighted_loss = (weighted_loss * mask).sum() / mask.sum()  # 只计算去掉部分的损失
+        # loss = (pred - target) ** 2
+        # loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
         #
-        # # 假设 pred 形状为 (N, L, C) 或 (N, C, L)，只要 dim=-1 是你要差分的维度即可
-        #
-        # # --- 一阶导数修正 ---
-        # # append 的张量在 dim=-1 上的长度为 1，其他维度与 pred 保持一致
-        # append_1st = torch.zeros((*pred.shape[:-1], 1), device=pred.device)
-        # pred_diff_1st = torch.diff(pred, dim=-1, append=append_1st)
-        # target_diff_1st = torch.diff(target, dim=-1, append=append_1st)
-        #
-        # # --- 二阶导数修正 ---
-        # # 注意：二阶导数是对一阶导数的结果再求导。
-        # # 为了保持尺寸一致，append 的长度依然建议设为 1（因为 diff 每次减少 1 个元素）
-        # append_2nd = torch.zeros((*pred_diff_1st.shape[:-1], 1), device=pred.device)
-        # pred_diff_2nd = torch.diff(pred_diff_1st, dim=-1, append=append_2nd)
-        # target_diff_2nd = torch.diff(target_diff_1st, dim=-1, append=append_2nd)
-        #
-        # # 计算损失
-        # grad_loss = torch.mean((pred_diff_1st - target_diff_1st) ** 2)
-        # grad_loss += torch.mean((pred_diff_2nd - target_diff_2nd) ** 2)
-        #
-        # # 组合L1损失和梯度损失
-        # total_loss = weighted_loss + grad_loss
+        # loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        # return loss
+
 
     def predeict(self, x, mask_ratio=0.75):
         latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
@@ -287,7 +289,7 @@ def Block(embed_dim, num_heads, mlp_ratio, qkv_bias, qk_scale, norm_layer):
 
 
 # 用于创建模型的辅助函数
-def mae_vit_base_patch16_dec512d8b(**kwargs):
+def mae_vit_base_patch9_dec512d8b(**kwargs):
     model = MaskedAutoencoderViT1D(
         patch_size=9, embed_dim=768, depth=12, num_heads=12,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
@@ -297,7 +299,7 @@ def mae_vit_base_patch16_dec512d8b(**kwargs):
 
 def mae_vit_large_patch16_dec512d8b(**kwargs):
     model = MaskedAutoencoderViT1D(
-        patch_size=16, embed_dim=1024, depth=24, num_heads=16,
+        patch_size=9, embed_dim=1024, depth=24, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
@@ -305,7 +307,7 @@ def mae_vit_large_patch16_dec512d8b(**kwargs):
 
 def mae_vit_huge_patch14_dec512d8b(**kwargs):
     model = MaskedAutoencoderViT1D(
-        patch_size=14, embed_dim=1280, depth=32, num_heads=16,
+        patch_size=9, embed_dim=1280, depth=32, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model

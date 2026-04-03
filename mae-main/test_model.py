@@ -44,20 +44,14 @@ def calculate_ssim(original, reconstructed):
     return ssim(original, reconstructed, data_range=reconstructed.max() - reconstructed.min(), win_size=3,
                 channel_axis=0)
 
-
-def visualize_results_with_mask(original, mask, reconstructed, idx=0, epoch=0):
-    """绘制原始数据曲线并填充掩码区域（优化清晰度版本）"""
-
-    # ===== 可调参数 =====
-    step = 3  # 降采样步长（建议2~5）
+def visualize_results_with_mask(original, mask, reconstructed, idx=0, save_id=0, epoch=0):
+    step = 3
     figsize = (20, 4)
 
-    # 转 numpy
-    original_np = original[idx].cpu().numpy()
-    reconstructed_np = reconstructed[idx].cpu().numpy()
-    masked_region = mask[idx].cpu().numpy() == 1
+    original_np = original[idx].detach().cpu().numpy()
+    reconstructed_np = reconstructed[idx].detach().cpu().numpy()
+    masked_region = mask[idx].detach().cpu().numpy() == 1
 
-    # ===== 构造 full mask =====
     full_masked_region = np.zeros(len(original_np), dtype=bool)
     patch_size = len(original_np) // len(masked_region)
 
@@ -67,21 +61,16 @@ def visualize_results_with_mask(original, mask, reconstructed, idx=0, epoch=0):
             end = start + patch_size
             full_masked_region[start:end] = True
 
-    # ===== 降采样 =====
     original_plot = original_np[::step]
     reconstructed_plot = reconstructed_np[::step]
     mask_plot = full_masked_region[::step]
 
-    # ===== 构造波数轴（更专业）=====
     x = np.linspace(400, 4000, len(original_plot))
 
-    # ===== 绘图 =====
     plt.figure(figsize=figsize)
-
     plt.plot(x, original_plot, label='Original Spectrum', linewidth=1)
     plt.plot(x, reconstructed_plot, label='Reconstructed Spectrum', linestyle='dotted', linewidth=1)
 
-    # mask 区域填充
     plt.fill_between(
         x,
         original_plot,
@@ -91,23 +80,18 @@ def visualize_results_with_mask(original, mask, reconstructed, idx=0, epoch=0):
         label='Masked Regions'
     )
 
-    # ===== 图像优化 =====
-    plt.title(f"Spectrum {idx} (Masked Regions)")
+    plt.title(f"Spectrum {save_id} (Masked Regions)")
     plt.xlabel("Wavenumber (cm⁻¹)")
     plt.ylabel("Intensity")
-
     plt.grid(alpha=0.3)
     plt.legend()
-
-    # IR 常见：x轴反转
     plt.gca().invert_xaxis()
 
-    # ===== 保存 =====
     output_dir = f"./output/test_results{epoch}"
     os.makedirs(output_dir, exist_ok=True)
 
     plt.savefig(
-        f"{output_dir}/spectrum_{idx}_with_mask.png",
+        f"{output_dir}/spectrum_{save_id:04d}_with_mask.png",
         dpi=150,
         bbox_inches='tight'
     )
@@ -115,64 +99,62 @@ def visualize_results_with_mask(original, mask, reconstructed, idx=0, epoch=0):
 
 
 # 测试流程
-def test_model(model, test_loader, epoch=60):
-    model.eval()  # 进入评估模式
-    total_mse = 0
-    num_samples = 0
+def test_model(model, test_loader, epoch=304):
+    model.eval()
+    total_masked_mse = 0.0
+    num_batches = 0
     logger.info(f"Starting epoch {epoch} testing...")
-    j = 0
-    for idx, batch in enumerate(test_loader):
+
+
+    for batch_idx, batch in enumerate(test_loader):
         batch = batch.cuda()
 
         with torch.no_grad():
             loss, pred, mask = model(batch, mask_ratio=0.3)
-            outputs = model.unpatchify(pred)
 
-        # 计算 SSIM 和 MSE
-        # batch_ssim = 0
-        batch_mse = 0
-        for i in range(batch.size(0)):
-            original = batch[i]
-            reconstructed = outputs[i]
-            # batch_ssim += calculate_ssim(original, reconstructed)
-            batch_mse += torch.mean((original - reconstructed) ** 2)
+            target = model.patchify(batch)                     # [N, L, p]
+            mask_expanded = mask.unsqueeze(-1)                # [N, L, 1]
 
-        # batch_ssim /= batch.size(0)
-        batch_mse /= batch.size(0)
-        # total_ssim += batch_ssim
-        total_mse += batch_mse
+            pasted = target * (1 - mask_expanded) + pred * mask_expanded
+            outputs = model.unpatchify(pasted)
 
-        # 可视化
-        if j < 100:  # 选择前20个样本进行可视化
-            sample_idx = 0
-            visualize_results_with_mask(batch, mask, outputs, idx=idx, epoch=epoch)
-        j += 1
+            mse_per_patch = ((pred - target) ** 2).mean(dim=-1)   # [N, L]
+            masked_mse = (mse_per_patch * mask).sum() / mask.sum()
 
-        num_samples += batch.size(0)
+        total_masked_mse += masked_mse.item()
+        num_batches += 1
 
-    # avg_ssim = total_ssim / num_samples
-    # avg_mse = total_mse / num_samples
-    # print(f"第{epoch}Test SSIM: {avg_ssim:.4f}, MSE: {avg_mse:.4f}")
-    logger.info(f"第{epoch}Test:MSE: {total_mse:.4f}")
+        if batch_idx < 100:
+            print(f'绘制第{batch_idx}张图')
 
+            visualize_results_with_mask(
+                batch, mask, outputs,
+                idx=0,
+                save_id=batch_idx,
+                epoch=epoch
+            )
+
+
+    avg_masked_mse = total_masked_mse / max(num_batches, 1)
+    logger.info(f"Epoch {epoch} Test Masked MSE: {avg_masked_mse:.6f}")
 
 # 执行测试
 
 if __name__ == '__main__':
     # 配置
     test_dataset_path = r'/home/rspip/zay/ir_json_dataset/train.pkl'  # 替换为测试集路径
-    checkpoint_path = r'/home/rspip/zay/mae/mae-main/output_dir/checkpoint-60.pth'  # 替换为模型检查点路径，如果为空则随机初始化模型
+    checkpoint_path = r'/home/rspip/zay/mae/mae-main/output_dir/checkpoint-304.pth'  # 替换为模型检查点路径，如果为空则随机初始化模型
     output_dir = './output/test_results'  # 保存输出文件夹
     os.makedirs(output_dir, exist_ok=True)
 
     # 模型定义
-    model = mae_model.mae_vit_base_patch16_dec512d8b()  # 使用你的模型结构
+    model = mae_model.mae_vit_base_patch9_dec512d8b()  # 使用你的模型结构
 
     model = load_model_from_checkpoint(model, checkpoint_path)
     model = model.cuda()  # 将模型移动到GPU
 
     # 数据集加载
     test_dataset = IRSpectraDataset(test_dataset_path)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     test_model(model, test_loader)
