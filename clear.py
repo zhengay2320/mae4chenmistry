@@ -7,7 +7,7 @@ from pathlib import Path
 # =========================
 # 配置区
 # =========================
-CHECKPOINT_DIR = "/home/rspip/zay/mae/mae-main/output_dir"   # 改成你的目录
+CHECKPOINT_DIR = "/home/rspip/zay/mae/mae-main/18patoutput_dir"   # 改成你的目录
 MAX_KEEP = 10
 CHECK_INTERVAL_SECONDS = 600   # 10分钟
 

@@ -114,14 +114,14 @@ def get_args_parser():
                         type=str,
                         help='dataset path')
 
-    parser.add_argument('--output_dir', default='./output_dir',
+    parser.add_argument('--output_dir', default='./18patoutput_dir',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='./output_dir',
+    parser.add_argument('--log_dir', default='./18patoutput_dir',
                         help='path where to tensorboard log')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--resume', default=f'/home/rspip/zay/mae/mae-main/output_dir/checkpoint-154.pth',
+    parser.add_argument('--resume', default=r'/home/rspip/zay/mae/mae-main/18patoutput_dir/checkpoint-44.pth',
                         help='resume from checkpoint')
 
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
@@ -211,7 +211,7 @@ def main(args):
 
     # define the model
     # model = models_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss)
-    model = models_mae.mae_vit_base_patch9_dec512d8b()
+    model = models_mae.mae_vit_base_patch18_dec512d8b()
 
     model.to(device)
 
